@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Local datasets and generated outputs
+Dataset/
+artifacts/
+runs/
+*.cache
+
+# Model weights/checkpoints
+*.pt
+*.pth
+*.onnx
+*.engine
+*.torchscript
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Optional environment files
+.env
+.env.*

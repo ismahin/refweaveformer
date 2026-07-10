@@ -1,0 +1,16 @@
+data: configs/fabric_fault.yaml
+model: yolov8n.pt
+epochs: 50
+imgsz: 640
+batch: 4
+workers: 0
+device: 0
+project: runs/fabric_fault
+name: yolo8n_4gb
+patience: 15
+save_period: 10
+seed: 42
+amp: true
+cache: false
+cos_lr: true
+plots: true
