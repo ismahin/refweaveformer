@@ -45,9 +45,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate the custom notebook RefWeaveFormer-YOLO model.")
     parser.add_argument("--config", default="configs/custom_refweaveformer_4gb.yaml", type=Path)
     parser.add_argument("--weights", default="artifacts/refweaveformer_yolo/best_refweaveformer_yolo.pt", type=Path)
+    parser.add_argument("--batch-size", type=int, help="Override evaluation batch size.")
+    parser.add_argument("--num-workers", type=int, help="Override DataLoader worker count.")
+    parser.add_argument("--amp", choices=["true", "false"], help="Override mixed precision inference.")
     args = parser.parse_args()
 
     cfg = load_cfg(args.config)
+    if args.batch_size is not None:
+        cfg.BATCH_SIZE = args.batch_size
+    if args.num_workers is not None:
+        cfg.NUM_WORKERS = args.num_workers
+    if args.amp is not None:
+        cfg.AMP = args.amp == "true"
+
     out_dir = Path(cfg.OUT_DIR)
     out_dir.mkdir(parents=True, exist_ok=True)
     core.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -56,6 +66,7 @@ def main() -> None:
     ckpt = core.load_checkpoint(model, args.weights, map_location=core.device)
     model.eval()
     print("Loaded:", args.weights, "epoch:", ckpt.get("epoch"))
+    print("Device:", core.device, "| eval batch size:", cfg.BATCH_SIZE, "| AMP:", cfg.AMP)
 
     split_data = core.build_split_index(Path(cfg.DATA_ROOT), cfg)
     iou_thresholds = [round(x, 2) for x in list(__import__("numpy").arange(0.50, 0.96, 0.05))]
@@ -79,7 +90,7 @@ def main() -> None:
         summary["splits"][split_name] = metrics["overall"]
         print(split_name, json.dumps(metrics["overall"], indent=2))
 
-    core.measure_latency(model, cfg.IMG_SIZE, out_dir)
+    core.measure_latency(model, cfg.IMG_SIZE, out_dir, amp=cfg.AMP)
 
     sample_dir = out_dir / "prediction_samples"
     sample_dir.mkdir(parents=True, exist_ok=True)

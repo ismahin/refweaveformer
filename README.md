@@ -96,6 +96,12 @@ Evaluate the best checkpoint on validation and test splits:
 python scripts\evaluate_custom_refweaveformer.py --config configs\custom_refweaveformer_max.yaml --weights artifacts\refweaveformer_yolo_max\best_refweaveformer_yolo.pt
 ```
 
+For low-memory evaluation, keep the same trained weights and lower only the evaluation batch size:
+
+```powershell
+python scripts\evaluate_custom_refweaveformer.py --config configs\custom_refweaveformer_max.yaml --weights artifacts\refweaveformer_yolo_max\best_refweaveformer_yolo.pt --batch-size 1
+```
+
 Evaluation saves:
 
 ```text

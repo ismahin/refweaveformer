@@ -1059,26 +1059,27 @@ def validate_one_epoch(model, loader, cfg):
     meters = {"val_loss": [], "val_box_loss": [], "val_obj_loss": [], "val_cls_loss": [], "val_aux_loss": []}
     total_batches = len(loader)
 
-    for batch_idx, (images, targets) in enumerate(loader, start=1):
-        images = images.to(device, non_blocking=True)
-        targets = [t.to(device, non_blocking=True) for t in targets]
+    with torch.inference_mode():
+        for batch_idx, (images, targets) in enumerate(loader, start=1):
+            images = images.to(device, non_blocking=True)
+            targets = [t.to(device, non_blocking=True) for t in targets]
 
-        with torch.cuda.amp.autocast(enabled=(cfg.AMP and torch.cuda.is_available())):
-            outputs = model(images)
-            loss, logs = detection_loss(outputs, targets, cfg)
+            with torch.cuda.amp.autocast(enabled=(cfg.AMP and torch.cuda.is_available())):
+                outputs = model(images)
+                loss, logs = detection_loss(outputs, targets, cfg)
 
-        meters["val_loss"].append(logs["loss"])
-        meters["val_box_loss"].append(logs["box_loss"])
-        meters["val_obj_loss"].append(logs["obj_loss"])
-        meters["val_cls_loss"].append(logs["cls_loss"])
-        meters["val_aux_loss"].append(logs["aux_loss"])
+            meters["val_loss"].append(logs["loss"])
+            meters["val_box_loss"].append(logs["box_loss"])
+            meters["val_obj_loss"].append(logs["obj_loss"])
+            meters["val_cls_loss"].append(logs["cls_loss"])
+            meters["val_aux_loss"].append(logs["aux_loss"])
 
-        if batch_idx == 1 or batch_idx % 50 == 0 or batch_idx == total_batches:
-            print(
-                f"  val batch {batch_idx}/{total_batches} | "
-                f"val_loss={logs['loss']:.4f}",
-                flush=True,
-            )
+            if batch_idx == 1 or batch_idx % 50 == 0 or batch_idx == total_batches:
+                print(
+                    f"  val batch {batch_idx}/{total_batches} | "
+                    f"val_loss={logs['loss']:.4f}",
+                    flush=True,
+                )
 
     return {k: float(np.mean(v)) if len(v) else 0.0 for k, v in meters.items()}
 
@@ -1264,19 +1265,21 @@ def run_inference_on_dataset(model, dataset, loader, cfg):
 
     img_counter = 0
 
-    for batch_idx, (images, targets) in enumerate(loader):
-        images = images.to(device, non_blocking=True)
-        outputs = model(images)
-        batch_preds = decode_predictions(outputs, cfg)
+    with torch.inference_mode():
+        for batch_idx, (images, targets) in enumerate(loader):
+            images = images.to(device, non_blocking=True)
+            with torch.cuda.amp.autocast(enabled=(cfg.AMP and torch.cuda.is_available())):
+                outputs = model(images)
+            batch_preds = decode_predictions(outputs, cfg)
 
-        for j in range(images.shape[0]):
-            pair_idx = batch_idx * loader.batch_size + j
-            if pair_idx >= len(dataset.pairs):
-                continue
+            for j in range(images.shape[0]):
+                pair_idx = batch_idx * loader.batch_size + j
+                if pair_idx >= len(dataset.pairs):
+                    continue
 
-            predictions[img_counter] = batch_preds[j]
-            ground_truths[img_counter] = get_ground_truth(dataset.pairs[pair_idx], cfg)
-            img_counter += 1
+                predictions[img_counter] = batch_preds[j]
+                ground_truths[img_counter] = get_ground_truth(dataset.pairs[pair_idx], cfg)
+                img_counter += 1
 
     return predictions, ground_truths
 
@@ -1524,13 +1527,14 @@ def save_predictions_csv(predictions, ground_truths, out_dir, prefix="test"):
                 f.write(f"{img_id},{int(cls)},{box[0]},{box[1]},{box[2]},{box[3]}\n")
 
 
-def measure_latency(model, img_size, out_dir):
+def measure_latency(model, img_size, out_dir, amp=True):
     model.eval()
     dummy = torch.randn(1, 3, img_size, img_size).to(device)
 
-    with torch.no_grad():
+    with torch.inference_mode():
         for _ in range(5):
-            _ = model(dummy)
+            with torch.cuda.amp.autocast(enabled=(amp and torch.cuda.is_available())):
+                _ = model(dummy)
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()
@@ -1538,7 +1542,8 @@ def measure_latency(model, img_size, out_dir):
         t0 = time.time()
         runs = 20
         for _ in range(runs):
-            _ = model(dummy)
+            with torch.cuda.amp.autocast(enabled=(amp and torch.cuda.is_available())):
+                _ = model(dummy)
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()
@@ -1563,8 +1568,10 @@ def predict_single_image(model, image_path, cfg):
     image_t = torch.from_numpy(image_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
 
     model.eval()
-    outputs = model(image_t)
-    pred = decode_predictions(outputs, cfg)[0]
+    with torch.inference_mode():
+        with torch.cuda.amp.autocast(enabled=(cfg.AMP and torch.cuda.is_available())):
+            outputs = model(image_t)
+        pred = decode_predictions(outputs, cfg)[0]
 
     return image_np, pred
 
