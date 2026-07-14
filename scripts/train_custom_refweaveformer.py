@@ -69,6 +69,7 @@ def main() -> None:
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--img-size", type=int)
     parser.add_argument("--batch-size", type=int)
+    parser.add_argument("--model", choices=["v1", "v2"], help="Override model architecture.")
     parser.add_argument("--amp", choices=["true", "false"])
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--max-train-samples", type=int, help="Use only this many training images per epoch.")
@@ -83,6 +84,8 @@ def main() -> None:
         cfg.IMG_SIZE = args.img_size
     if args.batch_size is not None:
         cfg.BATCH_SIZE = args.batch_size
+    if args.model is not None:
+        cfg.MODEL = args.model
     if args.amp is not None:
         cfg.AMP = args.amp == "true"
 
@@ -122,7 +125,7 @@ def main() -> None:
     train_loader = make_loader(split_data["train"], cfg, augment=True)
     val_loader = make_loader(split_data["val"], cfg, augment=False)
 
-    model = core.RefWeaveFormerYOLO(num_classes=cfg.NUM_CLASSES).to(core.device)
+    model = core.build_model(cfg).to(core.device)
     core.initialize_detection_biases(model, cfg.NUM_CLASSES)
     print(f"Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
 
