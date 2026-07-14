@@ -47,6 +47,7 @@ def main() -> None:
     parser.add_argument("--weights", default="artifacts/refweaveformer_yolo/best_refweaveformer_yolo.pt", type=Path)
     parser.add_argument("--batch-size", type=int, help="Override evaluation batch size.")
     parser.add_argument("--num-workers", type=int, help="Override DataLoader worker count.")
+    parser.add_argument("--model", choices=["v1", "v2"], help="Override model architecture.")
     parser.add_argument("--amp", choices=["true", "false"], help="Override mixed precision inference.")
     args = parser.parse_args()
 
@@ -55,6 +56,8 @@ def main() -> None:
         cfg.BATCH_SIZE = args.batch_size
     if args.num_workers is not None:
         cfg.NUM_WORKERS = args.num_workers
+    if args.model is not None:
+        cfg.MODEL = args.model
     if args.amp is not None:
         cfg.AMP = args.amp == "true"
 
@@ -62,7 +65,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     core.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = core.RefWeaveFormerYOLO(num_classes=cfg.NUM_CLASSES).to(core.device)
+    model = core.build_model(cfg).to(core.device)
     ckpt = core.load_checkpoint(model, args.weights, map_location=core.device)
     model.eval()
     print("Loaded:", args.weights, "epoch:", ckpt.get("epoch"))

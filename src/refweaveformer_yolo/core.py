@@ -38,6 +38,10 @@ class CFG:
     NUM_CLASSES: int = 1
     CLASS_NAMES: Tuple[str, ...] = ("scratch",)
 
+    MODEL: str = "v1"
+    FPN_CH: int = 160
+    BIFPN_REPEATS: int = 1
+
     EPOCHS: int = 100
     BATCH_SIZE: int = 4
     NUM_WORKERS: int = 2
@@ -564,6 +568,75 @@ class TextureReferenceDeviationModule(nn.Module):
         return self.out(x * gate + diff)
 
 
+class SimAM(nn.Module):
+    """
+    Lightweight parameter-free attention.
+
+    It is useful for textured defect images because it suppresses feature
+    responses that are not locally distinctive without adding parameters.
+    """
+    def __init__(self, eps=1e-4):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, x):
+        mean = x.mean(dim=(2, 3), keepdim=True)
+        var = ((x - mean) ** 2).mean(dim=(2, 3), keepdim=True)
+        energy = (x - mean) ** 2 / (4 * (var + self.eps)) + 0.5
+        return x * torch.sigmoid(energy)
+
+
+class LargeKernelTextureBlock(nn.Module):
+    """
+    Multi-branch large-kernel texture block for thin and elongated defects.
+
+    The square branch captures local defect blobs, while horizontal and
+    vertical strip branches improve sensitivity to scratches, broken yarns,
+    and long narrow fabric faults.
+    """
+    def __init__(self, ch, expand=2):
+        super().__init__()
+        hidden = ch * expand
+        self.in_conv = ConvBNAct(ch, hidden, k=1)
+        self.dw3 = nn.Conv2d(hidden, hidden, 3, padding=1, groups=hidden, bias=False)
+        self.dw7 = nn.Conv2d(hidden, hidden, 7, padding=3, groups=hidden, bias=False)
+        self.strip_h = nn.Conv2d(hidden, hidden, (1, 11), padding=(0, 5), groups=hidden, bias=False)
+        self.strip_v = nn.Conv2d(hidden, hidden, (11, 1), padding=(5, 0), groups=hidden, bias=False)
+        self.mix = ConvBNAct(hidden * 4, ch, k=1)
+        self.attn = SimAM()
+        self.out = ConvBNAct(ch, ch, k=3)
+
+    def forward(self, x):
+        y = self.in_conv(x)
+        y = torch.cat([self.dw3(y), self.dw7(y), self.strip_h(y), self.strip_v(y)], dim=1)
+        y = self.mix(y)
+        y = self.attn(y)
+        return x + self.out(y)
+
+
+class TextureEnhancedStage(nn.Module):
+    def __init__(self, in_ch, out_ch, depth=2):
+        super().__init__()
+        self.base = CSPConvNeXtStage(in_ch, out_ch, depth=depth)
+        self.texture = LargeKernelTextureBlock(out_ch)
+
+    def forward(self, x):
+        return self.texture(self.base(x))
+
+
+class StrongCrossGatedFusion(nn.Module):
+    def __init__(self, local_ch, global_ch, out_ch):
+        super().__init__()
+        self.fuse = CrossGatedFusion(local_ch, global_ch, out_ch)
+        self.refine = nn.Sequential(
+            LargeKernelTextureBlock(out_ch),
+            SimAM(),
+        )
+
+    def forward(self, local_feat, global_feat):
+        return self.refine(self.fuse(local_feat, global_feat))
+
+
 class CrossGatedFusion(nn.Module):
     def __init__(self, local_ch, global_ch, out_ch):
         super().__init__()
@@ -665,6 +738,20 @@ class WeightedBiFPN(nn.Module):
         p5_out = self.p5_out_conv(p5_out)
 
         return [p2_out, p3_out, p4_out, p5_out]
+
+
+class StackedWeightedBiFPN(nn.Module):
+    def __init__(self, in_channels, out_ch=192, repeats=2):
+        super().__init__()
+        self.blocks = nn.ModuleList()
+        self.blocks.append(WeightedBiFPN(in_channels, out_ch=out_ch))
+        for _ in range(1, repeats):
+            self.blocks.append(WeightedBiFPN([out_ch, out_ch, out_ch, out_ch], out_ch=out_ch))
+
+    def forward(self, feats):
+        for block in self.blocks:
+            feats = block(feats)
+        return feats
 
 
 class DecoupledYOLOHead(nn.Module):
@@ -775,6 +862,107 @@ class RefWeaveFormerYOLO(nn.Module):
         aux = self.aux_head(p2)
 
         return [out_p2, out_p3, out_p4, out_p5, aux]
+
+
+class RefWeaveFormerYOLOv2(nn.Module):
+    """
+    Stronger research model for fabric defects.
+
+    Changes versus v1:
+    - texture-enhanced ConvNeXt stages with strip/large-kernel branches
+    - SimAM-gated cross fusion to suppress texture false positives
+    - stacked weighted BiFPN for stronger P2/P3 small-defect fusion
+    - wider detection neck/head while preserving the v1 training interface
+    """
+    def __init__(self, num_classes=1, fpn_ch=192, bifpn_repeats=2):
+        super().__init__()
+
+        self.stem1 = ConvBNAct(3, 32, k=3, s=2)
+        self.stem2 = ConvBNAct(32, 64, k=3, s=2)
+
+        self.local_p2 = TextureEnhancedStage(64, 128, depth=2)
+        self.local_p3_down = ConvBNAct(128, 256, k=3, s=2)
+        self.local_p3 = TextureEnhancedStage(256, 256, depth=3)
+
+        self.local_p4_down = ConvBNAct(256, 384, k=3, s=2)
+        self.local_p4 = TextureEnhancedStage(384, 384, depth=4)
+
+        self.local_p5_down = ConvBNAct(384, 512, k=3, s=2)
+        self.local_p5 = TextureEnhancedStage(512, 512, depth=3)
+
+        self.global_p2 = TransformerStage(64, 128, depth=1, heads=4, window_size=8)
+
+        self.global_p3_down = ConvBNAct(128, 256, k=3, s=2)
+        self.global_p3 = TransformerStage(256, 256, depth=1, heads=4, window_size=8)
+
+        self.global_p4_down = ConvBNAct(256, 384, k=3, s=2)
+        self.global_p4 = TransformerStage(384, 384, depth=2, heads=6, window_size=8)
+
+        self.global_p5_down = ConvBNAct(384, 512, k=3, s=2)
+        self.global_p5 = TransformerStage(512, 512, depth=2, heads=8, window_size=5)
+
+        self.fuse_p2 = StrongCrossGatedFusion(128, 128, 128)
+        self.fuse_p3 = StrongCrossGatedFusion(256, 256, 256)
+        self.fuse_p4 = StrongCrossGatedFusion(384, 384, 384)
+        self.fuse_p5 = StrongCrossGatedFusion(512, 512, 512)
+
+        self.neck = StackedWeightedBiFPN(
+            [128, 256, 384, 512],
+            out_ch=fpn_ch,
+            repeats=bifpn_repeats,
+        )
+
+        self.head_p2 = DecoupledYOLOHead(fpn_ch, num_classes, hidden=fpn_ch)
+        self.head_p3 = DecoupledYOLOHead(fpn_ch, num_classes, hidden=fpn_ch)
+        self.head_p4 = DecoupledYOLOHead(fpn_ch, num_classes, hidden=fpn_ch)
+        self.head_p5 = DecoupledYOLOHead(fpn_ch, num_classes, hidden=fpn_ch)
+
+        self.aux_head = AuxiliaryDefectnessHead(fpn_ch)
+
+    def forward(self, x):
+        x = self.stem1(x)
+        x = self.stem2(x)
+
+        l2 = self.local_p2(x)
+        l3 = self.local_p3(self.local_p3_down(l2))
+        l4 = self.local_p4(self.local_p4_down(l3))
+        l5 = self.local_p5(self.local_p5_down(l4))
+
+        g2 = self.global_p2(x)
+        g3 = self.global_p3(self.global_p3_down(g2))
+        g4 = self.global_p4(self.global_p4_down(g3))
+        g5 = self.global_p5(self.global_p5_down(g4))
+
+        f2 = self.fuse_p2(l2, g2)
+        f3 = self.fuse_p3(l3, g3)
+        f4 = self.fuse_p4(l4, g4)
+        f5 = self.fuse_p5(l5, g5)
+
+        p2, p3, p4, p5 = self.neck([f2, f3, f4, f5])
+        p2, p3, p4, p5 = p2.contiguous(), p3.contiguous(), p4.contiguous(), p5.contiguous()
+
+        out_p2 = self.head_p2(p2)
+        out_p3 = self.head_p3(p3)
+        out_p4 = self.head_p4(p4)
+        out_p5 = self.head_p5(p5)
+        aux = self.aux_head(p2)
+
+        return [out_p2, out_p3, out_p4, out_p5, aux]
+
+
+def build_model(cfg: CFG):
+    model_name = str(getattr(cfg, "MODEL", "v1")).lower()
+    fpn_ch = int(getattr(cfg, "FPN_CH", 160))
+    if model_name in {"v1", "refweaveformer", "refweaveformer_yolo"}:
+        return RefWeaveFormerYOLO(num_classes=cfg.NUM_CLASSES, fpn_ch=fpn_ch)
+    if model_name in {"v2", "strong", "refweaveformer_v2", "refweaveformer_yolo_v2"}:
+        repeats = int(getattr(cfg, "BIFPN_REPEATS", 2))
+        return RefWeaveFormerYOLOv2(
+            num_classes=cfg.NUM_CLASSES,
+            fpn_ch=fpn_ch,
+            bifpn_repeats=repeats,
+        )
+    raise ValueError(f"Unknown MODEL={getattr(cfg, 'MODEL', None)!r}. Use 'v1' or 'v2'.")
 
 
 def initialize_detection_biases(model, num_classes):
@@ -1627,5 +1815,3 @@ def plot_prediction(image_np, pred, class_names, save_path=None):
         plt.close()
     else:
         plt.show()
-
-

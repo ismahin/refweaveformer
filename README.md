@@ -46,6 +46,17 @@ Maximum-accuracy training for a stronger GPU/PC:
 python scripts\train_custom_refweaveformer.py --config configs\custom_refweaveformer_max.yaml
 ```
 
+Train the stronger research model:
+
+```powershell
+python scripts\train_custom_refweaveformer.py --config configs\custom_refweaveformer_v2_strong.yaml
+```
+
+`RefWeaveFormer-YOLO v2` adds texture-enhanced large/strip-kernel stages,
+SimAM-gated fusion, a stacked weighted BiFPN, and a wider head. It keeps the
+same output/evaluation format as the original model, so the same evaluation
+script works after training.
+
 Resume interrupted training:
 
 ```powershell
@@ -96,6 +107,18 @@ Evaluate the best checkpoint on validation and test splits:
 python scripts\evaluate_custom_refweaveformer.py --config configs\custom_refweaveformer_max.yaml --weights artifacts\refweaveformer_yolo_max\best_refweaveformer_yolo.pt
 ```
 
+Evaluate the stronger model:
+
+```powershell
+python scripts\evaluate_custom_refweaveformer.py --config configs\custom_refweaveformer_v2_strong.yaml --weights artifacts\refweaveformer_yolo_v2_strong\best_refweaveformer_yolo.pt
+```
+
+Sweep inference thresholds to find a stronger operating point:
+
+```powershell
+python scripts\sweep_custom_thresholds.py --config configs\custom_refweaveformer_max.yaml --weights artifacts\refweaveformer_yolo_max\best_refweaveformer_yolo.pt
+```
+
 For low-memory evaluation, keep the same trained weights and lower only the evaluation batch size:
 
 ```powershell
@@ -127,9 +150,42 @@ artifacts/refweaveformer_yolo_max/
 
 The main metrics include `mAP50`, `mAP50_95`, precision, recall, F1, AP50, and AP75.
 
+## Baseline comparison
+
+Train standard same-dataset baselines for a paper table:
+
+```powershell
+python scripts\train_ultralytics_baselines.py --data configs\fabric_fault.yaml --models yolo11n.pt yolo11s.pt yolo11m.pt yolov8n.pt yolov8s.pt yolov8m.pt --epochs 200 --imgsz 640 --batch 8
+```
+
+This writes:
+
+```text
+artifacts/baselines/baseline_summary.json
+artifacts/baselines/baseline_summary.csv
+```
+
+Create a paper-ready comparison table that combines your custom results,
+Ultralytics baselines, and literature context:
+
+```powershell
+python scripts\make_comparison_table.py
+```
+
+The output is saved in:
+
+```text
+artifacts/comparison/paper_comparison.csv
+artifacts/comparison/paper_comparison.md
+```
+
+Only same-dataset rows should be used for direct "beats baseline" claims.
+Literature rows use different datasets and are included as contextual targets.
+
 ## Configs
 
 - `configs/custom_refweaveformer_max.yaml` - maximum-accuracy training for a high-spec PC.
+- `configs/custom_refweaveformer_v2_strong.yaml` - stronger v2 research model.
 - `configs/custom_refweaveformer_4gb.yaml` - conservative GTX 1650 4 GB training.
 - `configs/custom_refweaveformer_fast.yaml` - quick debugging/subset training.
 - `configs/fabric_fault.yaml` - YOLO dataset report config.
