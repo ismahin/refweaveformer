@@ -5,6 +5,7 @@ import math
 import os
 import random
 import time
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -69,6 +70,15 @@ def seed_everything(seed=42):
     torch.cuda.manual_seed_all(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
     torch.backends.cudnn.benchmark = True
+
+
+def amp_autocast(enabled):
+    enabled = bool(enabled and torch.cuda.is_available())
+    if not enabled:
+        return nullcontext()
+    if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+        return torch.amp.autocast("cuda", enabled=True)
+    return torch.cuda.amp.autocast(enabled=True)
 
 
 def read_data_yaml(data_root: Path):
@@ -1022,7 +1032,7 @@ def train_one_epoch(model, loader, optimizer, scaler, cfg):
 
         optimizer.zero_grad(set_to_none=True)
 
-        with torch.cuda.amp.autocast(enabled=(cfg.AMP and torch.cuda.is_available())):
+        with amp_autocast(cfg.AMP):
             outputs = model(images)
             loss, logs = detection_loss(outputs, targets, cfg)
 
@@ -1064,7 +1074,7 @@ def validate_one_epoch(model, loader, cfg):
             images = images.to(device, non_blocking=True)
             targets = [t.to(device, non_blocking=True) for t in targets]
 
-            with torch.cuda.amp.autocast(enabled=(cfg.AMP and torch.cuda.is_available())):
+            with amp_autocast(cfg.AMP):
                 outputs = model(images)
                 loss, logs = detection_loss(outputs, targets, cfg)
 
@@ -1268,7 +1278,7 @@ def run_inference_on_dataset(model, dataset, loader, cfg):
     with torch.inference_mode():
         for batch_idx, (images, targets) in enumerate(loader):
             images = images.to(device, non_blocking=True)
-            with torch.cuda.amp.autocast(enabled=(cfg.AMP and torch.cuda.is_available())):
+            with amp_autocast(cfg.AMP):
                 outputs = model(images)
             batch_preds = decode_predictions(outputs, cfg)
 
@@ -1292,7 +1302,8 @@ def compute_ap(recall, precision):
         mpre[i - 1] = np.maximum(mpre[i - 1], mpre[i])
 
     x = np.linspace(0, 1, 101)
-    return float(np.trapz(np.interp(x, mrec, mpre), x))
+    y = np.interp(x, mrec, mpre)
+    return float(np.sum((y[1:] + y[:-1]) * (x[1:] - x[:-1]) * 0.5))
 
 
 def evaluate_predictions(predictions, ground_truths, num_classes, iou_thresholds):
@@ -1533,7 +1544,7 @@ def measure_latency(model, img_size, out_dir, amp=True):
 
     with torch.inference_mode():
         for _ in range(5):
-            with torch.cuda.amp.autocast(enabled=(amp and torch.cuda.is_available())):
+            with amp_autocast(amp):
                 _ = model(dummy)
 
         if torch.cuda.is_available():
@@ -1542,7 +1553,7 @@ def measure_latency(model, img_size, out_dir, amp=True):
         t0 = time.time()
         runs = 20
         for _ in range(runs):
-            with torch.cuda.amp.autocast(enabled=(amp and torch.cuda.is_available())):
+            with amp_autocast(amp):
                 _ = model(dummy)
 
         if torch.cuda.is_available():
@@ -1569,7 +1580,7 @@ def predict_single_image(model, image_path, cfg):
 
     model.eval()
     with torch.inference_mode():
-        with torch.cuda.amp.autocast(enabled=(cfg.AMP and torch.cuda.is_available())):
+        with amp_autocast(cfg.AMP):
             outputs = model(image_t)
         pred = decode_predictions(outputs, cfg)[0]
 
